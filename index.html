@@ -1,0 +1,2261 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>뱀파이어 서바이벌 IO</title>
+    <style>
+        canvas {
+            border: 1px solid black;
+            background: #000;
+            display: block;
+        }
+        body {
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: #333;
+            overflow: hidden;
+        }
+        @media (orientation: landscape) and (max-height: 500px) {
+            body {
+                align-items: flex-start;
+            }
+        }
+        #gameOverScreen {
+            display: none;
+            position: absolute;
+            color: white;
+            text-align: center;
+            font-size: 24px;
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 10px;
+        }
+        #levelUpScreen {
+            display: none;
+            position: absolute;
+            color: white;
+            text-align: center;
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 1000;
+        }
+        .skill-button {
+            margin: 10px;
+            padding: 10px 20px;
+            background: #4CAF50;
+            border: none;
+            color: white;
+            cursor: pointer;
+            border-radius: 5px;
+            font-size: 16px;
+            transition: background 0.3s;
+        }
+        .skill-button:hover {
+            background: #45a049;
+        }
+        #statsUI {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            min-width: 200px;
+        }
+
+        .weapon-info {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .weapon-level {
+            float: right;
+            color: #ffff00;
+        }
+
+        .stat-value {
+            float: right;
+            color: #00ff00;
+        }
+
+        .divider {
+            border-top: 1px solid rgba(255, 255, 255, 0.3);
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="gameOverScreen">
+        <h2>게임 오버!</h2>
+        <p>점수: <span id="finalScore">0</span></p>
+        <button onclick="restartGame()">다시 시작</button>
+    </div>
+    <div id="levelUpScreen">
+        <h2>레벨 업!</h2>
+        <div id="skillChoices"></div>
+    </div>
+    <div id="statsUI">
+        <div id="playerStats"></div>
+        <div class="divider"></div>
+        <div id="weaponStats"></div>
+    </div>
+    <div id="joystickContainer" style="
+        position: fixed;
+        left: 100px;
+        bottom: 100px;
+        width: 150px;
+        height: 150px;
+        background: rgba(255, 255, 255, 0.2);
+        border-radius: 50%;
+        touch-action: none;
+        z-index: 1000;
+    ">
+        <div id="joystickBall" style="
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 50px;
+            height: 50px;
+            background: rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        "></div>
+    </div>
+    <script>
+        // 1. 캔버스 설정
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const levelUpScreen = document.getElementById('levelUpScreen');
+
+        // 16:9 비율로 맵 크기 설정 (1.5배 크게)
+        canvas.width = 1280;  // 기존 800의 1.5배 이상
+        canvas.height = 720;  // 16:9 비율 적용
+
+        // 화면 크기 자동 조절 함수
+        function resizeCanvas() {
+            const windowWidth = window.innerWidth;
+            const windowHeight = window.innerHeight;
+            
+            const scale = Math.min(
+                windowWidth / canvas.width,
+                windowHeight / canvas.height
+            );
+            
+            canvas.style.width = `${canvas.width * scale}px`;
+            canvas.style.height = `${canvas.height * scale}px`;
+        }
+
+        // 리사이즈 이벤트 리스너 추가
+        window.addEventListener('resize', resizeCanvas);
+        window.addEventListener('orientationchange', resizeCanvas);
+
+        // 2. 게임 상태 객체 (먼저 선언)
+        const gameState = {
+            player: null,
+            enemies: [],
+            keys: {},
+            score: 0,
+            isGameOver: false,
+            isPaused: false,
+            items: [],
+            currentStage: 0,
+            killCount: 0,
+            enemyProjectiles: [],
+            currentStageIndex: 0,
+            stageProgress: 0,
+            camera: {
+                x: 0,
+                y: 0
+            },
+            worldWidth: 12800,  // 기존 맵의 10배
+            worldHeight: 7200   // 기존 맵의 10배
+        };
+
+        // 3. 상수 정의
+        const ENEMY_TYPES = {
+            NORMAL: {
+                color: 'green',
+                health: 50,
+                speed: 3.3,    // 2.75 * 1.2 (유지)
+                damage: 30,
+                expValue: 10,
+                radius: 15,
+                spawnChance: 0.6
+            },
+            FAST: {
+                color: '#ffff00',
+                health: 25,
+                speed: 4.5,    // 5.4 -> 4.5로 복구
+                damage: 20,
+                expValue: 15,
+                radius: 12,
+                spawnChance: 0.2
+            },
+            TANK: {
+                color: '#800080',
+                health: 150,
+                speed: 1.58,   // 1.32 * 1.2 (유지)
+                damage: 50,
+                expValue: 30,
+                radius: 25,
+                spawnChance: 0.15
+            },
+            BOSS: {
+                color: '#ff0000',
+                health: 800,
+                speed: 2.38,   // 1.98 * 1.2 (유지)
+                damage: 100,
+                expValue: 100,
+                radius: 40,
+                spawnChance: 0.05
+            }
+        };
+
+        const STAGES = [
+            {
+                name: "숲",
+                background: '#1a472a',
+                enemyTypes: ['NORMAL', 'FAST'],
+                spawnRate: 0.02,
+                bossRequired: 100
+            },
+            {
+                name: "동굴",
+                background: '#2a2a2a',
+                enemyTypes: ['NORMAL', 'TANK'],
+                spawnRate: 0.03,
+                bossRequired: 200
+            },
+            {
+                name: "용암",
+                background: '#4a1a1a',
+                enemyTypes: ['FAST', 'TANK', 'BOSS'],
+                spawnRate: 0.04,
+                bossRequired: 300
+            }
+        ];
+
+        // 4. 유틸리티 함수
+        function findNearestEnemy(x, y) {
+            let nearest = null;
+            let minDist = Infinity;
+            
+            gameState.enemies.forEach(enemy => {
+                const dx = enemy.x - x;
+                const dy = enemy.y - y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < minDist) {
+                    minDist = dist;
+                    nearest = enemy;
+                }
+            });
+            
+            return nearest;
+        }
+
+        // 5. 클래스 정의
+        class Projectile {
+            constructor(x, y, player, config = {}) {
+                this.x = x;
+                this.y = y;
+                this.radius = config.radius || 5;
+                this.speed = config.speed || 7;
+                this.damage = config.damage || player.damage;
+                this.color = config.color || 'yellow';
+                this.piercing = config.piercing || false;
+                this.isActive = true;
+                
+                if (config.direction) {
+                    this.vx = config.direction.x * this.speed;
+                    this.vy = config.direction.y * this.speed;
+                } else {
+                const nearestEnemy = findNearestEnemy(x, y);
+                if (nearestEnemy) {
+                    const dx = nearestEnemy.x - x;
+                    const dy = nearestEnemy.y - y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    this.vx = (dx / dist) * this.speed;
+                    this.vy = (dy / dist) * this.speed;
+                } else {
+                    this.vx = this.speed;
+                    this.vy = 0;
+                    }
+                }
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+
+                if (this.x < 0 || this.x > gameState.worldWidth || 
+                    this.y < 0 || this.y > gameState.worldHeight) {
+                    this.isActive = false;
+                }
+
+                this.draw();
+            }
+
+            draw() {
+                const screen = worldToScreen(this.x, this.y);
+                
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                if (this.piercing) {
+                    ctx.strokeStyle = '#ff6666';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+                ctx.closePath();
+            }
+        }
+
+        class Weapon {
+            constructor(player, level = 1) {
+                this.player = player;
+                this.level = level;
+                this.cooldown = 0;
+                this.maxCooldown = Math.max(10, 30 - (level - 1) * 4);  // 쿨다운 감소 2배
+                this.damage = 10 + (level - 1) * 8;  // 데미지 증가 2배
+                this.projectileSpeed = 7 + (level - 1);  // 속도 증가 2배
+                this.projectileSize = 5 + (level - 1) * 0.6;  // 크기 증가 2배
+                this.projectileColor = 'yellow';
+                this.projectiles = [];
+            }
+
+            update() {
+                if (this.cooldown > 0) {
+                    this.cooldown--;
+                } else {
+                    this.shoot();
+                    this.cooldown = this.maxCooldown;
+                }
+
+                this.projectiles = this.projectiles.filter(p => {
+                    p.update();
+                    return p.isActive;
+                });
+            }
+
+            shoot() {
+                this.projectiles.push(new Projectile(this.player.x, this.player.y, this.player, {
+                    damage: this.damage,
+                    speed: this.projectileSpeed,
+                    radius: this.projectileSize,
+                    color: this.projectileColor
+                }));
+            }
+        }
+
+        class TripleShot extends Weapon {
+            constructor(player, level = 1) {
+                super(player, level);
+                this.maxCooldown = Math.max(15, 45 - (level - 1) * 5);  // 쿨다운 감소 2배
+                this.damage = 8 + (level - 1) * 6;  // 데미지 증가 2배
+                this.projectileColor = '#ff7f00';
+                this.angleSpread = 15 + (level - 1) * 6;  // 각도 증가 2배
+                this.projectileCount = 3 + Math.floor((level - 1) / 2);  // 발사체 추가 빈도 증가
+            }
+
+            shoot() {
+                const nearestEnemy = findNearestEnemy(this.player.x, this.player.y);
+                let baseAngle = 0;
+
+                if (nearestEnemy) {
+                    const dx = nearestEnemy.x - this.player.x;
+                    const dy = nearestEnemy.y - this.player.y;
+                    baseAngle = Math.atan2(dy, dx);
+                }
+
+                const angleStep = (this.angleSpread * 2) / (this.projectileCount - 1);
+                for (let i = 0; i < this.projectileCount; i++) {
+                    const angle = baseAngle - this.angleSpread + (angleStep * i);
+                    const direction = {
+                        x: Math.cos(angle),
+                        y: Math.sin(angle)
+                    };
+                    
+                    this.projectiles.push(new Projectile(
+                        this.player.x,
+                        this.player.y,
+                        this.player,
+                        {
+                            damage: this.damage,
+                            speed: this.projectileSpeed,
+                            radius: this.projectileSize,
+                            color: this.projectileColor,
+                            direction: direction
+                        }
+                    ));
+                }
+            }
+        }
+
+        class LaserBeam extends Weapon {
+            constructor(player, level = 1) {
+                super(player, level);
+                this.maxCooldown = Math.max(40, 120 - (level - 1) * 16);  // 쿨다운 감소 2배
+                this.damage = 25 + (level - 1) * 16;  // 데미지 증가 2배
+                this.projectileSize = 8 + (level - 1);  // 크기 증가 2배
+                this.length = 30 + (level - 1) * 16;  // 길이 증가 2배
+                this.pierceCount = 1 + Math.floor((level - 1) / 2);  // 관통 횟수 증가
+            }
+
+            shoot() {
+                const nearestEnemy = findNearestEnemy(this.player.x, this.player.y);
+                if (nearestEnemy) {
+                    const dx = nearestEnemy.x - this.player.x;
+                    const dy = nearestEnemy.y - this.player.y;
+                    const angle = Math.atan2(dy, dx);
+                    const direction = {
+                        x: Math.cos(angle),
+                        y: Math.sin(angle)
+                    };
+
+                    this.projectiles.push(new LaserProjectile(
+                        this.player.x,
+                        this.player.y,
+                        this.player,
+                        {
+                            damage: this.damage,
+                            speed: this.projectileSpeed,
+                            radius: this.projectileSize,
+                            color: this.projectileColor,
+                            direction: direction,
+                            pierceCount: this.pierceCount,
+                            length: this.length
+                        }
+                    ));
+                }
+            }
+        }
+
+        // 레이저 전용 발사체 클래스 추가
+        class LaserProjectile extends Projectile {
+            constructor(x, y, player, config) {
+                super(x, y, player, config);
+                this.pierceCount = config.pierceCount || 1;
+                this.length = config.length || 30;
+                this.hitEnemies = new Set();
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+
+                if (this.x < 0 || this.x > gameState.worldWidth || 
+                    this.y < 0 || this.y > gameState.worldHeight) {
+                    this.isActive = false;
+                }
+
+                this.draw();
+                return this.isActive;
+            }
+
+            draw() {
+                const startScreen = worldToScreen(this.x, this.y);
+                const endScreen = worldToScreen(
+                    this.x + this.vx * this.length,
+                    this.y + this.vy * this.length
+                );
+
+                // 레이저 외곽선 (글���우 효과)
+                ctx.beginPath();
+                ctx.moveTo(startScreen.x, startScreen.y);
+                ctx.lineTo(endScreen.x, endScreen.y);
+                ctx.strokeStyle = '#ff6666';
+                ctx.lineWidth = this.radius + 4;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.stroke();
+
+                // 레이저 메인
+                ctx.beginPath();
+                ctx.moveTo(startScreen.x, startScreen.y);
+                ctx.lineTo(endScreen.x, endScreen.y);
+                ctx.strokeStyle = this.color;
+                ctx.lineWidth = this.radius;
+                ctx.lineCap = 'round';
+                ctx.stroke();
+            }
+
+            checkCollisionWithEnemy(enemy) {
+                if (this.hitEnemies.has(enemy)) return false;
+
+                const endX = this.x + this.vx * this.length;
+                const endY = this.y + this.vy * this.length;
+                
+                const A = this.x - enemy.x;
+                const B = this.y - enemy.y;
+                const C = endX - enemy.x;
+                const D = endY - enemy.y;
+                
+                const dot = A * C + B * D;
+                const len_sq = C * C + D * D;
+                let param = -1;
+                
+                if (len_sq != 0) param = dot / len_sq;
+                
+                let xx, yy;
+                
+                if (param < 0) {
+                    xx = this.x;
+                    yy = this.y;
+                } else if (param > 1) {
+                    xx = endX;
+                    yy = endY;
+                } else {
+                    xx = this.x + param * C;
+                    yy = this.y + param * D;
+                }
+                
+                const dx = enemy.x - xx;
+                const dy = enemy.y - yy;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance <= enemy.radius) {
+                    this.hitEnemies.add(enemy);
+                    if (this.hitEnemies.size >= this.pierceCount) {
+                        this.isActive = false;
+                    }
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        class Enemy {
+            constructor(x, y, type = 'NORMAL') {
+                this.id = Math.random().toString(36).substr(2, 9); // 고유 ID 추가
+                this.x = x;
+                this.y = y;
+                const enemyData = ENEMY_TYPES[type];
+                this.type = type;
+                this.radius = enemyData.radius;
+                this.speed = enemyData.speed;
+                this.health = enemyData.health;
+                this.maxHealth = enemyData.health;
+                this.damage = enemyData.damage;
+                this.expValue = enemyData.expValue;
+                this.color = enemyData.color;
+                
+                // 디버깅을 위한 로그
+                console.log(`Created ${type} enemy with exp value: ${this.expValue}`);
+                this.baseSpeed = ENEMY_TYPES[type].speed;
+                this.speedBoost = 1.0;
+                this.lastSpeedBoostTime = Date.now();
+            }
+
+            draw() {
+                const screen = worldToScreen(this.x, this.y);
+                
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.closePath();
+
+                if (this.type === 'BOSS') {
+                    ctx.beginPath();
+                    ctx.arc(screen.x, screen.y, this.radius, 0, Math.PI * 2);
+                    ctx.strokeStyle = '#ff6666';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                    ctx.closePath();
+                }
+
+                const healthPercent = this.health / this.maxHealth;
+                const barWidth = this.radius * 2;
+                const barHeight = 4;
+                
+                ctx.fillStyle = 'black';
+                ctx.fillRect(screen.x - barWidth/2, screen.y - this.radius - 10, barWidth, barHeight);
+                ctx.fillStyle = 'red';
+                ctx.fillRect(screen.x - barWidth/2, screen.y - this.radius - 10, barWidth * healthPercent, barHeight);
+            }
+
+            // 다른 적과의 충돌 처리
+            handleCollision(other) {
+                const dx = this.x - other.x;
+                const dy = this.y - other.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                const minDistance = this.radius + other.radius;
+                
+                if (distance < minDistance) {
+                    // 겹침 정도 계산
+                    const overlap = minDistance - distance;
+                    
+                    // 밀어내는 방향 계산
+                    const pushX = (dx / distance) * overlap * 0.5;
+                    const pushY = (dy / distance) * overlap * 0.5;
+                    
+                    // 서로 반대 방향으로 밀어냄
+                    this.x += pushX;
+                    this.y += pushY;
+                    other.x -= pushX;
+                    other.y -= pushY;
+                    
+                    // 월드 경계 체크
+                    this.clampToWorld();
+                    other.clampToWorld();
+                }
+            }
+
+            // 월드 경계 내로 위치 제한
+            clampToWorld() {
+                this.x = Math.max(this.radius, Math.min(this.x, gameState.worldWidth - this.radius));
+                this.y = Math.max(this.radius, Math.min(this.y, gameState.worldHeight - this.radius));
+            }
+
+            moveTowardsPlayer(player) {
+                // 30초마다 속도 증가 체크
+                const currentTime = Date.now();
+                if (currentTime - this.lastSpeedBoostTime >= 30000) {
+                    this.speedBoost *= 1.01; // 1% 증가
+                    this.lastSpeedBoostTime = currentTime;
+                }
+
+                // 실제 속도 계산 (기본 속도 * 증가율)
+                const currentSpeed = this.baseSpeed * this.speedBoost;
+
+                // 플레이어 방향으로 이동
+                const dx = player.x - this.x;
+                const dy = player.y - this.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance !== 0) {
+                    this.x += (dx / distance) * currentSpeed;
+                    this.y += (dy / distance) * currentSpeed;
+                }
+            }
+        }
+
+        class Player {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.radius = 20;
+                this.speed = 4.5;
+                this.health = 80;
+                this.maxHealth = 80;
+                this.exp = 0;
+                this.maxExp = 50;
+                this.level = 1;
+                this.damage = 8;
+                this.isInvulnerable = false;
+                this.invulnerableTime = 500;
+                this.alpha = 1;
+
+                // 무기 레벨 시스템 추가
+                this.weaponLevels = {
+                    'BasicWeapon': 1,
+                    'TripleShot': 0,
+                    'LaserBeam': 0,
+                    'LightningChain': 0,
+                    'IceOrb': 0,
+                    'CombatDrone': 0
+                };
+                
+                // 기본 무기로 시작
+                this.weapons = [new Weapon(this)];
+            }
+
+            update() {
+                // 키보드 입력 처리
+                let moveX = 0;
+                let moveY = 0;
+
+                if (gameState.keys['ArrowLeft'] || gameState.keys['a']) moveX -= 1;
+                if (gameState.keys['ArrowRight'] || gameState.keys['d']) moveX += 1;
+                if (gameState.keys['ArrowUp'] || gameState.keys['w']) moveY -= 1;
+                if (gameState.keys['ArrowDown'] || gameState.keys['s']) moveY += 1;
+
+                // 조이스틱 입력 추가
+                moveX += joystick.dx;
+                moveY += joystick.dy;
+
+                // 대각선 이동 시 속도 정규화
+                if (moveX !== 0 && moveY !== 0) {
+                    const length = Math.sqrt(moveX * moveX + moveY * moveY);
+                    moveX /= length;
+                    moveY /= length;
+                }
+
+                // 이동 적용
+                this.x += moveX * this.speed;
+                this.y += moveY * this.speed;
+
+                // 맵 경계 체크
+                this.x = Math.max(0, Math.min(this.x, gameState.worldWidth));
+                this.y = Math.max(0, Math.min(this.y, gameState.worldHeight));
+
+                // 무기 업데이트
+                for (const weapon of Object.values(this.weapons)) {
+                    if (weapon.level > 0) {
+                        weapon.update();
+                    }
+                }
+
+                // 체력 자동 회복
+                if (this.health < this.maxHealth) {
+                    this.health = Math.min(this.maxHealth, this.health + this.healthRegen);
+                }
+            }
+
+            draw() {
+                const screen = worldToScreen(this.x, this.y);
+                
+                ctx.globalAlpha = this.alpha;
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = 'red';
+                ctx.fill();
+                ctx.closePath();
+                ctx.globalAlpha = 1;
+
+                // 체력바
+                const barWidth = 50;
+                const barHeight = 5;
+                
+                ctx.fillStyle = 'black';
+                ctx.fillRect(screen.x - barWidth/2, screen.y - 30, barWidth, barHeight);
+                ctx.fillStyle = 'red';
+                ctx.fillRect(screen.x - barWidth/2, screen.y - 30, barWidth * (this.health/this.maxHealth), barHeight);
+
+                // 경험치바 아래에 경험치바 추가
+                const expPercent = this.exp / this.maxExp;
+                const expBarWidth = 50;
+                const expBarHeight = 3;
+                
+                ctx.fillStyle = 'black';
+                ctx.fillRect(screen.x - expBarWidth/2, screen.y - 25, expBarWidth, expBarHeight);
+                ctx.fillStyle = '#00ff00';  // 경험치바는 초록색으로
+                ctx.fillRect(screen.x - expBarWidth/2, screen.y - 25, expBarWidth * expPercent, expBarHeight);
+
+                // 레벨 표시
+                ctx.fillStyle = 'white';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(`Lv.${this.level}`, screen.x, screen.y - 35);
+            }
+
+            move(keys) {
+                const newX = this.x + (keys.ArrowRight ? this.speed : (keys.ArrowLeft ? -this.speed : 0));
+                const newY = this.y + (keys.ArrowDown ? this.speed : (keys.ArrowUp ? -this.speed : 0));
+                
+                // 월드 경계 체크
+                if (newX >= this.radius && newX <= gameState.worldWidth - this.radius) {
+                    this.x = newX;
+                }
+                if (newY >= this.radius && newY <= gameState.worldHeight - this.radius) {
+                    this.y = newY;
+                }
+            }
+
+            gainExp(amount) {
+                if (typeof amount !== 'number' || isNaN(amount)) {
+                    console.error('Invalid exp amount:', amount);
+                    return;
+                }
+                
+                this.exp += amount;
+                console.log(`Gained ${amount} exp. Current exp: ${this.exp}/${this.maxExp}`);
+                
+                while (this.exp >= this.maxExp) {
+                    this.levelUp();
+                }
+
+                // UI 업데이트 추가
+                updateStatsUI();
+            }
+
+            levelUp() {
+                this.level++;
+                this.exp -= this.maxExp;
+                this.maxExp = Math.floor(this.maxExp * 1.1);
+                this.maxHealth += 15;
+                this.health = this.maxHealth;
+                this.damage += 4;
+                
+                // UI 업데이트 추가
+                updateStatsUI();
+                showLevelUpChoices();
+            }
+
+            takeDamage(damage) {
+                if (!this.isInvulnerable) {
+                    this.health -= damage;
+                    updateStatsUI();  // UI 업데이트
+
+                    // 체력이 0 이하면 게임 오버
+                    if (this.health <= 0) {
+                        this.health = 0;  // 체력이 음수가 되지 않도록
+                        showGameOver();
+                        return;
+                    }
+
+                    // 무적 상태 처리
+                    this.isInvulnerable = true;
+                    this.alpha = 0.5;
+                    
+                    setTimeout(() => {
+                        this.isInvulnerable = false;
+                        this.alpha = 1;
+                    }, this.invulnerableTime);
+                }
+            }
+
+            dash() {
+                if (this.abilities.dash.cooldown <= 0) {
+                    const speed = 20;
+                    const duration = 10;
+                    this.abilities.dash.isActive = true;
+                    
+                    // 대시 방향 결정
+                    const keys = gameState.keys;
+                    let dx = 0, dy = 0;
+                    if (keys.ArrowLeft) dx -= 1;
+                    if (keys.ArrowRight) dx += 1;
+                    if (keys.ArrowUp) dy -= 1;
+                    if (keys.ArrowDown) dy += 1;
+                    
+                    // 대시 실행
+                    let dashCount = 0;
+                    const dashInterval = setInterval(() => {
+                        if (dashCount < duration) {
+                            this.x += dx * speed;
+                            this.y += dy * speed;
+                            dashCount++;
+                        } else {
+                            clearInterval(dashInterval);
+                            this.abilities.dash.isActive = false;
+                        }
+                    }, 16);
+
+                    this.abilities.dash.cooldown = this.abilities.dash.maxCooldown;
+                }
+            }
+
+            updateCombo() {
+                if (this.comboTimer > 0) {
+                    this.comboTimer--;
+                    if (this.comboTimer <= 0) {
+                        this.combo = 0;
+                    }
+                }
+            }
+
+            increaseCombo() {
+                this.combo++;
+                this.comboTimer = this.maxComboTimer;
+                // 콤보에 따라 보너스
+                const comboBonus = Math.floor(this.combo / 10); // 10콤보당 보너스
+                this.damage = this.baseDamage * (1 + comboBonus * 0.1);
+            }
+
+            // 무기 레벨업 메서드 추가
+            upgradeWeapon(weaponType) {
+                this.weaponLevels[weaponType]++;
+                
+                // 기존 무기 찾기
+                const existingWeaponIndex = this.weapons.findIndex(w => {
+                    switch(weaponType) {
+                        case 'BasicWeapon': return w instanceof Weapon;
+                        case 'TripleShot': return w instanceof TripleShot;
+                        case 'LaserBeam': return w instanceof LaserBeam;
+                        case 'LightningChain': return w instanceof LightningChain;
+                        case 'IceOrb': return w instanceof IceOrb;
+                        case 'CombatDrone': return w instanceof CombatDrone;
+                    }
+                });
+
+                // 새 무기 생성 또는 기존 무기 업그레이드
+                let upgradedWeapon;
+                switch(weaponType) {
+                    case 'BasicWeapon':
+                        upgradedWeapon = new Weapon(this, this.weaponLevels[weaponType]);
+                        break;
+                    case 'TripleShot':
+                        upgradedWeapon = new TripleShot(this, this.weaponLevels[weaponType]);
+                        break;
+                    case 'LaserBeam':
+                        upgradedWeapon = new LaserBeam(this, this.weaponLevels[weaponType]);
+                        break;
+                    case 'LightningChain':
+                        upgradedWeapon = new LightningChain(this, this.weaponLevels[weaponType]);
+                        break;
+                    case 'IceOrb':
+                        upgradedWeapon = new IceOrb(this, this.weaponLevels[weaponType]);
+                        break;
+                    case 'CombatDrone':
+                        upgradedWeapon = new CombatDrone(this, this.weaponLevels[weaponType]);
+                        break;
+                }
+
+                if (existingWeaponIndex >= 0) {
+                    this.weapons[existingWeaponIndex] = upgradedWeapon;
+                } else {
+                    this.weapons.push(upgradedWeapon);
+                }
+
+                // UI 업데이트 추가
+                updateStatsUI();
+            }
+        }
+
+        // 아이템 클래스 정의
+        class Item {
+            constructor(x, y, type) {
+                this.x = x;
+                this.y = y;
+                this.radius = 15;
+                this.type = type;
+                this.collected = false;
+                // 체력 회복 아이템만 정의
+                this.itemInfo = {
+                    health: { emoji: '❤️', effect: '+30 HP' }
+                };
+            }
+
+            draw() {
+                const screen = worldToScreen(this.x, this.y);
+                
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                ctx.fill();
+                ctx.closePath();
+
+                ctx.font = '20px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.itemInfo[this.type].emoji, screen.x, screen.y);
+
+                // 마우스 위치 월드 ���표로 변환하여 체크
+                const mouseWorld = {
+                    x: gameState.mouseX + gameState.camera.x,
+                    y: gameState.mouseY + gameState.camera.y
+                };
+                
+                const dx = this.x - mouseWorld.x;
+                const dy = this.y - mouseWorld.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                if (distance < 50) {
+                    ctx.font = '14px Arial';
+                    ctx.fillStyle = 'white';
+                    ctx.fillText(this.itemInfo[this.type].effect, screen.x, screen.y - 25);
+                }
+            }
+        }
+
+        // 6. 게임 함수들
+        function spawnEnemy() {
+            if (gameState.enemies.length < gameState.difficulty.maxEnemies) {
+                // 맵 전체에서 랜덤하게 스��
+                let x, y;
+
+                // 플레이어 주변 일정 거리(1000픽셀) 이내에는 스폰하지 않음
+                do {
+                    x = Math.random() * gameState.worldWidth;
+                    y = Math.random() * gameState.worldHeight;
+                    
+                    const dx = x - gameState.player.x;
+                    const dy = y - gameState.player.y;
+                    const distanceFromPlayer = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distanceFromPlayer > 1000) {
+                        break;
+                    }
+                } while (true);
+
+                const rand = Math.random();
+                let enemyType = 'NORMAL';
+                let cumulative = 0;
+
+                for (const [type, data] of Object.entries(ENEMY_TYPES)) {
+                    cumulative += data.spawnChance;
+                    if (rand < cumulative) {
+                        enemyType = type;
+                        break;
+                    }
+                }
+
+                if (enemyType === 'BOSS' && gameState.score < 500) {
+                    enemyType = 'NORMAL';
+                }
+
+                gameState.enemies.push(new Enemy(x, y, enemyType));
+            }
+        }
+
+        function checkCollision(circle1, circle2) {
+            const dx = circle1.x - circle2.x;
+            const dy = circle1.y - circle2.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            return distance < circle1.radius + circle2.radius;
+        }
+
+        // showGameOver 함수 추가
+        function showGameOver() {
+            gameState.isGameOver = true;
+            const gameOverScreen = document.getElementById('gameOverScreen');
+            const finalScore = document.getElementById('finalScore');
+            finalScore.textContent = gameState.score;
+            gameOverScreen.style.display = 'block';
+        }
+
+        // restartGame 함수 추가
+        function restartGame() {
+            // 게임 상태 초기화
+            gameState.isGameOver = false;
+            gameState.score = 0;
+            gameState.enemies = [];
+            gameState.items = [];
+            gameState.enemyProjectiles = [];
+            
+            // 게임오버 화면 숨기기
+            document.getElementById('gameOverScreen').style.display = 'none';
+            
+            // 게임 재시작
+            initGame();
+        }
+
+        // 아이템 생성 함수
+        function spawnItem() {
+            if (Math.random() < 0.005) {
+                // 체력 회복 아이템만 생성
+                const x = Math.random() * gameState.worldWidth;
+                const y = Math.random() * gameState.worldHeight;
+                gameState.items.push(new Item(x, y, 'health'));
+            }
+        }
+
+        // 7. 이벤트 리스너
+        window.addEventListener('keydown', (e) => {
+            gameState.keys[e.key] = true;
+            if (e.key === ' ') { // 스페이스바로 대시
+                gameState.player.dash();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            gameState.keys[e.key] = false;
+        });
+
+        // 8. 게임 루프
+        function gameLoop() {
+            if (!gameState.isGameOver && !gameState.isPaused) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                updateCamera();
+                drawGrid();
+                
+                // UI 업데이트 추가
+                updateStatsUI();
+                
+                // 스테이지 진행도 업데이트
+                gameState.stageProgress = Math.floor(gameState.score / 100);
+                if (gameState.stageProgress >= STAGES[gameState.currentStageIndex].bossRequired) {
+                    if (gameState.currentStageIndex < STAGES.length - 1) {
+                        gameState.currentStageIndex++;
+                        updateStageBackground();
+                    }
+                }
+
+                // 아이템 성 및 업데이트
+                spawnItem();
+                gameState.items = gameState.items.filter(item => {
+                    if (!item.collected) {
+                        item.draw();
+                        if (checkCollision(gameState.player, item)) {
+                            applyItemEffect(item);
+                            return false;
+                        }
+                        return true;
+                    }
+                    return false;
+                });
+
+                // 적 발사체 ��데이트
+                gameState.enemyProjectiles = gameState.enemyProjectiles.filter(proj => {
+                    proj.update();
+                    if (checkCollision(proj, gameState.player)) {
+                        gameState.player.takeDamage(proj.damage);
+                        return false;
+                    }
+                    return proj.isActive;
+                });
+
+                gameState.player.update();
+                gameState.player.move(gameState.keys);
+                gameState.player.draw();
+
+                // 난이도 업데이트
+                updateDifficulty();
+
+                // 몬스터 스폰
+                if (Math.random() < gameState.difficulty.spawnRate) {
+                    spawnEnemy();
+                }
+
+                // 적들 간의 충 처리
+                for (let i = 0; i < gameState.enemies.length; i++) {
+                    for (let j = i + 1; j < gameState.enemies.length; j++) {
+                        gameState.enemies[i].handleCollision(gameState.enemies[j]);
+                    }
+                }
+
+                // 경험치 보석 업데이트 추가
+                gameState.expGems = gameState.expGems.filter(gem => {
+                    if (!gem.collected) {
+                        gem.update();
+                        gem.draw();
+                        
+                        // 플레이어와 충돌 체크
+                        if (checkCollision(gameState.player, gem)) {
+                            gameState.player.gainExp(gem.value);
+                            return false;
+                        }
+                        return true;
+                    }
+                    return false;
+                });
+
+                // 적 업데이트 및 그리기
+                gameState.enemies = gameState.enemies.filter(enemy => {
+                    enemy.moveTowardsPlayer(gameState.player);
+                    enemy.draw();
+
+                    // 플레이어와 적 충돌
+                    if (checkCollision(gameState.player, enemy)) {
+                        gameState.player.takeDamage(enemy.damage);
+                        if (gameState.player.health <= 0) {
+                            gameOver();
+                        }
+                    }
+
+                    // 발사체와 적 충돌 체크
+                    let enemyDestroyed = false;
+                    gameState.player.weapons.forEach(weapon => {
+                        weapon.projectiles = weapon.projectiles.filter(projectile => {
+                            let hit = false;
+                            if (projectile instanceof LaserProjectile) {
+                                hit = projectile.checkCollisionWithEnemy(enemy);
+                            } else {
+                                hit = checkCollision(projectile, enemy);
+                            }
+
+                            if (hit) {
+                                enemy.health -= projectile.damage;
+                                if (!(projectile instanceof LaserProjectile)) {
+                                projectile.isActive = false;
+                                }
+                                if (enemy.health <= 0 && !enemyDestroyed) {
+                                    gameState.score += 10;
+                                    gameState.expGems.push(new ExpGem(enemy.x, enemy.y, enemy.expValue));
+                                    enemyDestroyed = true;
+                                }
+                                return projectile instanceof LaserProjectile;
+                            }
+                            return true;
+                        });
+                    });
+
+                    return !enemyDestroyed && enemy.health > 0;
+                });
+
+                // UI 정보 추가
+                drawUI();
+            } else if (gameState.isGameOver) {
+                // 게임오버 상태에서는 화면 업데이트 중지
+                return;
+            }
+            requestAnimationFrame(gameLoop);
+        }
+
+        // 9. 게임 시작
+        function initGame() {
+            resizeCanvas();
+            gameState.difficulty = {
+                currentLevel: 1,
+                maxEnemies: 100,
+                spawnRate: 0.1,
+                updateInterval: 30000,
+                lastUpdateTime: Date.now()
+            };
+            gameState.player = new Player(
+                gameState.worldWidth / 2,
+                gameState.worldHeight / 2
+            );
+            
+            // 초기 UI 업데이트 추가
+            updateStatsUI();
+            
+            joystick.init();
+            
+            gameLoop();
+        }
+
+        // 배열을 섞는 유틸리티 함수를 추가합니다
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+            return array;
+        }
+
+        class Boss extends Enemy {
+            constructor(x, y) {
+                super(x, y, 'BOSS');
+                this.patterns = ['spread', 'chase', 'summon'];
+                this.currentPattern = null;
+                this.patternTimer = 0;
+            }
+
+            update() {
+                if (!this.currentPattern || this.patternTimer <= 0) {
+                    this.changePattern();
+                }
+                this.patternTimer--;
+                
+                switch(this.currentPattern) {
+                    case 'spread':
+                        this.spreadAttack();
+                        break;
+                    case 'chase':
+                        this.chasePlayer();
+                        break;
+                    case 'summon':
+                        this.summonMinions();
+                        break;
+                }
+            }
+
+            changePattern() {
+                this.currentPattern = this.patterns[Math.floor(Math.random() * this.patterns.length)];
+                this.patternTimer = 180; // 3초
+            }
+
+            spreadAttack() {
+                if (this.patternTimer % 30 === 0) { // 0.5초마다
+                    for (let i = 0; i < 8; i++) {
+                        const angle = (Math.PI * 2 * i) / 8;
+                        const projectile = new EnemyProjectile(
+                            this.x,
+                            this.y,
+                            Math.cos(angle) * 5,
+                            Math.sin(angle) * 5
+                        );
+                        gameState.enemyProjectiles.push(projectile);
+                    }
+                }
+            }
+
+            summonMinions() {
+                if (this.patternTimer % 60 === 0 && gameState.enemies.length < gameState.difficulty.maxEnemies) {
+                    for (let i = 0; i < 3; i++) {
+                        const angle = (Math.PI * 2 * i) / 3;
+                        const x = this.x + Math.cos(angle) * 50;
+                        const y = this.y + Math.sin(angle) * 50;
+                        gameState.enemies.push(new Enemy(x, y, 'NORMAL'));
+                    }
+                }
+            }
+
+            chasePlayer() {
+                const player = gameState.player;
+                const dx = player.x - this.x;
+                const dy = player.y - this.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                
+                if (dist > 0) {
+                    this.x += (dx / dist) * this.speed * 1.5;
+                    this.y += (dy / dist) * this.speed * 1.5;
+                }
+            }
+        }
+
+        // 스테이지 배경색 변경 함수 추가
+        function updateStageBackground() {
+            const currentStage = STAGES[gameState.currentStageIndex];
+            document.body.style.background = currentStage.background;
+        }
+
+        // 아이템 효과 적용 함수
+        function applyItemEffect(item) {
+            if (item.type === 'health') {
+                gameState.player.health = Math.min(
+                    gameState.player.health + 30,
+                    gameState.player.maxHealth
+                );
+            }
+        }
+
+        class EnemyProjectile {
+            constructor(x, y, vx, vy) {
+                this.x = x;
+                this.y = y;
+                this.vx = vx;
+                this.vy = vy;
+                this.radius = 5;
+                this.damage = 10;
+                this.isActive = true;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                
+                if (this.x < -10 || this.x > gameState.worldWidth + 10 ||
+                    this.y < -10 || this.y > gameState.worldHeight + 10) {
+                    this.isActive = false;
+                }
+                this.draw();
+            }
+
+            draw() {
+                const screen = worldToScreen(this.x, this.y);
+                
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = '#ff4444';
+                ctx.fill();
+                ctx.closePath();
+            }
+        }
+
+        // 마우스 위치 추적을 위한 이벤트 리스너 추가
+        window.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            
+            gameState.mouseX = (e.clientX - rect.left) * scaleX;
+            gameState.mouseY = (e.clientY - rect.top) * scaleY;
+        });
+
+        // 카메라 업데이트 함수 추가
+        function updateCamera() {
+            // 플레이어를 화면 중앙에 위치시키기 위한 카메라 위치 계산
+            gameState.camera.x = gameState.player.x - canvas.width/2;
+            gameState.camera.y = gameState.player.y - canvas.height/2;
+            
+            // 카메라가 맵 경계를 벗어나지 않도록 제한
+            gameState.camera.x = Math.max(0, Math.min(gameState.camera.x, gameState.worldWidth - canvas.width));
+            gameState.camera.y = Math.max(0, Math.min(gameState.camera.y, gameState.worldHeight - canvas.height));
+        }
+
+        // 월드 좌표를 화면 좌표로 변환하는 함수
+        function worldToScreen(x, y) {
+            return {
+                x: x - gameState.camera.x,
+                y: y - gameState.camera.y
+            };
+        }
+
+        // 배경 그리드 그리기 함수 추가
+        function drawGrid() {
+            const gridSize = 100;
+            const startX = Math.floor(gameState.camera.x / gridSize) * gridSize;
+            const startY = Math.floor(gameState.camera.y / gridSize) * gridSize;
+            const endX = startX + canvas.width + gridSize;
+            const endY = startY + canvas.height + gridSize;
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+            ctx.lineWidth = 1;
+
+            for (let x = startX; x < endX; x += gridSize) {
+                const screenX = x - gameState.camera.x;
+                ctx.beginPath();
+                ctx.moveTo(screenX, 0);
+                ctx.lineTo(screenX, canvas.height);
+                ctx.stroke();
+            }
+
+            for (let y = startY; y < endY; y += gridSize) {
+                const screenY = y - gameState.camera.y;
+                ctx.beginPath();
+                ctx.moveTo(0, screenY);
+                ctx.lineTo(canvas.width, screenY);
+                ctx.stroke();
+            }
+        }
+
+        // UI 위치 조정 (점수, 레벨 등은 화면에 고정된 UI)
+        function drawUI() {
+            // 경험치 바 표시
+            const expBarWidth = 200;
+            const expBarHeight = 20;
+            const expX = canvas.width - expBarWidth - 10;
+            const expY = 10;
+            
+            // 경험치 바 배경
+            ctx.fillStyle = 'rgba(255, 215, 0, 0.3)';
+            ctx.fillRect(expX, expY, expBarWidth, expBarHeight);
+            
+            // 현재 경험치
+            const expPercent = gameState.player.exp / gameState.player.maxExp;
+            ctx.fillStyle = 'rgba(255, 215, 0, 0.7)';
+            ctx.fillRect(expX, expY, expBarWidth * expPercent, expBarHeight);
+            
+            // 경험치 텍스트
+            ctx.fillStyle = 'white';
+            ctx.font = '12px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(
+                `Lv.${gameState.player.level} (${Math.floor(gameState.player.exp)}/${gameState.player.maxExp})`,
+                expX + expBarWidth / 2,
+                expY + expBarHeight - 5
+            );
+        }
+
+        // gameState에 경험치 보석 배열 추���������������
+        gameState.expGems = [];  // 경험치 보석 배열 추가
+
+        // ExpGem 클래스 추가
+        class ExpGem {
+            constructor(x, y, value) {
+                this.x = x;
+                this.y = y;
+                this.value = value;
+                this.radius = 8;
+                this.collected = false;
+                this.pulseTime = 0;
+                
+                // 약간의 랜덤한 초기 움직임
+                const angle = Math.random() * Math.PI * 2;
+                const force = Math.random() * 5;
+                this.vx = Math.cos(angle) * force;
+                this.vy = Math.sin(angle) * force;
+                this.friction = 0.95;
+            }
+
+            update() {
+                // 물리적 움직임 업데이트
+                this.vx *= this.friction;
+                this.vy *= this.friction;
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // 맵 경계 체크
+                this.x = Math.max(this.radius, Math.min(this.x, gameState.worldWidth - this.radius));
+                this.y = Math.max(this.radius, Math.min(this.y, gameState.worldHeight - this.radius));
+
+                // 플레이어와의 거리 체크
+                const dx = gameState.player.x - this.x;
+                const dy = gameState.player.y - this.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                // 플레이어가 가까이 있으면 끌어당김 (자석 효과)
+                const magnetRange = 150;
+                if (distance < magnetRange) {
+                    const pullStrength = (1 - distance/magnetRange) * 5;
+                    this.vx += (dx / distance) * pullStrength;
+                    this.vy += (dy / distance) * pullStrength;
+                }
+
+                // 맥박 효과 업데이트
+                this.pulseTime += 0.1;
+            }
+
+            draw() {
+                const screen = worldToScreen(this.x, this.y);
+                const pulse = Math.sin(this.pulseTime) * 0.2 + 1;
+                
+                // 빛나는 효과
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, this.radius * 1.5 * pulse, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(0, 150, 255, 0.2)';
+                ctx.fill();
+                
+                // 경험치 보석
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, this.radius * pulse, 0, Math.PI * 2);
+                ctx.fillStyle = '#00AAFF';
+                ctx.fill();
+                ctx.strokeStyle = '#FFFFFF';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+        }
+
+        // 난이도 업데이트 함수 추가
+        function updateDifficulty() {
+            const currentTime = Date.now();
+            if (currentTime - gameState.difficulty.lastUpdateTime >= gameState.difficulty.updateInterval) {
+                gameState.difficulty.currentLevel++;
+                
+                // 최대 몬스터 수 점진적 증가 (최대 600마리까지)
+                gameState.difficulty.maxEnemies = Math.min(600, 100 + (gameState.difficulty.currentLevel - 1) * 50);
+                
+                // 스폰 확률 점진적 증가 (최대 0.3까지)
+                gameState.difficulty.spawnRate = Math.min(0.3, 0.1 + (gameState.difficulty.currentLevel - 1) * 0.02);
+                
+                gameState.difficulty.lastUpdateTime = currentTime;
+                
+                // 난이도 증가 알림 (선택사항)
+                showDifficultyIncrease();
+            }
+        }
+
+        // 난이도 증가 알림 함수
+        function showDifficultyIncrease() {
+            ctx.save();
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.font = 'bold 24px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(`난이도 증가! Level ${gameState.difficulty.currentLevel}`, canvas.width/2, 100);
+            ctx.restore();
+        }
+
+        // 레벨업 시 스�� 선택지 수정
+        function showLevelUpChoices() {
+            gameState.isPaused = true;
+            const skillChoices = document.getElementById('skillChoices');
+            skillChoices.innerHTML = '';
+
+            // 사용 가능한 스킬 목록 생성
+            const availableSkills = [];
+            
+            // 무기 목록 정의
+            const weapons = [
+                {
+                    type: 'BasicWeapon',
+                    name: '기본 무기',
+                    description: '기본 발사체 강화'
+                },
+                {
+                    type: 'TripleShot',
+                    name: '무작위 발사',  // 삼중 발사 -> 무작위 발사로 변경
+                    description: '여러 방향으로 발사'
+                },
+                {
+                    type: 'LaserBeam',
+                    name: '레이저 빔',
+                    description: '관통하는 레이저'
+                },
+                {
+                    type: 'LightningChain',
+                    name: '번개 체인',
+                    description: '적들을 관통하는 연쇄 번개'
+                },
+                {
+                    type: 'IceOrb',
+                    name: '얼음장막',  // 얼음 오브 -> 얼음장막으로 변경
+                    description: '주변에 얼음 보호막을 생성하여 적을 둔화시킴'
+                },
+                {
+                    type: 'CombatDrone',
+                    name: '전투 드론',
+                    description: '자동으로 적을 공격하는 드론'
+                }
+            ];
+
+            // 무기 업그레이드 옵션 추가
+            weapons.forEach(weapon => {
+                if (gameState.player.weaponLevels[weapon.type] < 10) { // 최대 레벨 10으로 수정
+                    const isNew = gameState.player.weaponLevels[weapon.type] === 0;
+                    availableSkills.push({
+                        name: `${weapon.name} ${isNew ? '획득' : `강화 (Lv.${gameState.player.weaponLevels[weapon.type] + 1})`}`,
+                        description: isNew ? weapon.description : `${weapon.name} 강화`,
+                        effect: () => gameState.player.upgradeWeapon(weapon.type)
+                    });
+                }
+            });
+
+            // 기본 능력치 강화 옵션 추가
+            availableSkills.push(
+                { 
+                    name: '체력 증가', 
+                    description: '최대 체력 +30', 
+                    effect: () => {
+                        gameState.player.maxHealth += 30;
+                        gameState.player.health += 30;
+                    }
+                },
+                { 
+                    name: '이동속도 증가', 
+                    description: '이동속도 +5%', 
+                    effect: () => gameState.player.speed *= 1.05
+                }
+            );
+
+            // 3개의 랜덤 스킬 선택
+            const choices = shuffleArray(availableSkills).slice(0, 3);
+            
+            choices.forEach(skill => {
+                const button = document.createElement('button');
+                button.className = 'skill-button';
+                button.innerHTML = `<strong>${skill.name}</strong><br>${skill.description}`;
+                button.onclick = () => {
+                    skill.effect();
+                    levelUpScreen.style.display = 'none';
+                    gameState.isPaused = false;
+                };
+                skillChoices.appendChild(button);
+            });
+
+            levelUpScreen.style.display = 'block';
+        }
+
+        // 1. 번개 체인 - 적을 관통하며 연쇄 번개 발생
+        class LightningChain extends Weapon {
+            constructor(player, level = 1) {
+                super(player, level);
+                this.maxCooldown = Math.max(20, 60 - (level - 1) * 5);
+                this.damage = 15 + (level - 1) * 8;
+                this.projectileColor = '#00ffff';
+                this.chainCount = 2 + Math.floor(level / 2); // 연쇄 횟수
+                this.chainRange = 150 + (level - 1) * 20; // 연쇄 범위
+            }
+
+            shoot() {
+                const nearestEnemy = findNearestEnemy(this.player.x, this.player.y);
+                if (nearestEnemy) {
+                    this.createLightningChain(this.player, nearestEnemy, this.chainCount);
+                }
+            }
+
+            createLightningChain(source, target, remainingChains) {
+                // 번개 데미지 적용
+                target.health -= this.damage;
+                
+                // 시각적 효과
+                this.drawLightningEffect(source, target);
+
+                if (remainingChains > 0) {
+                    // 다음 타겟 찾기
+                    const nextTarget = this.findNextChainTarget(target);
+                    if (nextTarget) {
+                        setTimeout(() => {
+                            this.createLightningChain(target, nextTarget, remainingChains - 1);
+                        }, 100);
+                    }
+                }
+            }
+
+            findNextChainTarget(currentTarget) {
+                return gameState.enemies
+                    .filter(enemy => enemy !== currentTarget)
+                    .filter(enemy => {
+                        const dx = enemy.x - currentTarget.x;
+                        const dy = enemy.y - currentTarget.y;
+                        return Math.sqrt(dx * dx + dy * dy) <= this.chainRange;
+                    })
+                    .sort((a, b) => {
+                        const distA = Math.sqrt((a.x - currentTarget.x) ** 2 + (a.y - currentTarget.y) ** 2);
+                        const distB = Math.sqrt((b.x - currentTarget.x) ** 2 + (b.y - currentTarget.y) ** 2);
+                        return distA - distB;
+                    })[0];
+            }
+
+            drawLightningEffect(source, target) {
+                // 월드 좌표를 스크린 좌표로 변환
+                const sourceScreen = worldToScreen(source.x, source.y);
+                const targetScreen = worldToScreen(target.x, target.y);
+                
+                const segments = 8;
+                let points = [{x: sourceScreen.x, y: sourceScreen.y}];
+                
+                // 스크린 좌표 기준으로 번개 포인트 생성
+                for (let i = 1; i < segments; i++) {
+                    const ratio = i / segments;
+                    const baseX = sourceScreen.x + (targetScreen.x - sourceScreen.x) * ratio;
+                    const baseY = sourceScreen.y + (targetScreen.y - sourceScreen.y) * ratio;
+                    const offset = (Math.random() - 0.5) * 40;
+                    points.push({
+                        x: baseX + offset,
+                        y: baseY + offset
+                    });
+                }
+                points.push({x: targetScreen.x, y: targetScreen.y});
+
+                // 번개 외곽선 (글로우 효과)
+                ctx.beginPath();
+                ctx.moveTo(points[0].x, points[0].y);
+                for (let i = 1; i < points.length; i++) {
+                    ctx.lineTo(points[i].x, points[i].y);
+                }
+                ctx.strokeStyle = '#80ffff';
+                ctx.lineWidth = 8;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.stroke();
+
+                // 메인 번개
+                ctx.beginPath();
+                ctx.moveTo(points[0].x, points[0].y);
+                for (let i = 1; i < points.length; i++) {
+                    ctx.lineTo(points[i].x, points[i].y);
+                }
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                // 작은 가지 번개들 추가
+                for (let i = 1; i < points.length - 1; i++) {
+                    if (Math.random() < 0.5) {
+                        const branchLength = Math.random() * 30 + 10;
+                        const angle = Math.random() * Math.PI * 2;
+                        const endX = points[i].x + Math.cos(angle) * branchLength;
+                        const endY = points[i].y + Math.sin(angle) * branchLength;
+
+                        ctx.beginPath();
+                        ctx.moveTo(points[i].x, points[i].y);
+                        ctx.lineTo(endX, endY);
+                        ctx.strokeStyle = '#80ffff';
+                        ctx.lineWidth = 2;
+                        ctx.stroke();
+                    }
+                }
+
+                // 충격파 효과
+                const screen = worldToScreen(target.x, target.y);
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, 20, 0, Math.PI * 2);
+                const gradient = ctx.createRadialGradient(
+                    screen.x, screen.y, 0,
+                    screen.x, screen.y, 20
+                );
+                gradient.addColorStop(0, 'rgba(128, 255, 255, 0.8)');
+                gradient.addColorStop(1, 'rgba(128, 255, 255, 0)');
+                ctx.fillStyle = gradient;
+                ctx.fill();
+            }
+        }
+
+        // 2. 폭발 화살 - 적중 시 폭발
+        class ExplosiveArrow extends Weapon {
+            constructor(player, level = 1) {
+                super(player, level);
+                this.maxCooldown = Math.max(30, 90 - (level - 1) * 8);
+                this.damage = 20 + (level - 1) * 10;
+                this.explosionRadius = 80 + (level - 1) * 15;
+                this.explosionDuration = 2000;  // 2초로 증가
+                this.projectileColor = '#ff4400';
+            }
+
+            createExplosion(x, y) {
+                // 즉시 데미지 적용
+                gameState.enemies.forEach(enemy => {
+                    const dx = x - enemy.x;
+                    const dy = y - enemy.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance <= this.explosionRadius) {
+                        const damageRatio = 1 - (distance / this.explosionRadius);
+                        enemy.health -= this.damage * damageRatio;
+                    }
+                });
+
+                const explosion = {
+                    x: x,
+                    y: y,
+                    timeLeft: this.explosionDuration,
+                    progress: 0,
+                    parent: this,
+                    
+                    update: function() {
+                        this.progress = Math.min(1, 1 - (this.timeLeft / this.parent.explosionDuration));
+                        // 노란색 폭발 이펙트
+                        drawExplosionEffect(x, y, this.parent.explosionRadius, this.progress, 'rgba(255, 255, 0, 0.5)');
+                        this.timeLeft -= 16;
+                        return this.timeLeft > 0;
+                    }
+                };
+                return explosion;
+            }
+
+            shoot() {
+                const nearestEnemy = findNearestEnemy(this.player.x, this.player.y);
+                if (nearestEnemy) {
+                    const dx = nearestEnemy.x - this.player.x;
+                    const dy = nearestEnemy.y - this.player.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    const direction = {
+                        x: dx / distance,
+                        y: dy / distance
+                    };
+
+                    const arrow = new ExplosiveProjectile(
+                        this.player.x,
+                        this.player.y,
+                        this.player,
+                        {
+                            damage: this.damage,
+                            direction: direction,
+                            color: this.projectileColor,
+                            explosionRadius: this.explosionRadius,
+                            explosionDuration: this.explosionDuration,
+                            parent: this  // 부모 참조 추가
+                        }
+                    );
+                    this.projectiles.push(arrow);
+                }
+            }
+        }
+
+        class ExplosiveProjectile extends Projectile {
+            constructor(x, y, player, config) {
+                super(x, y, player, config);
+                this.explosionRadius = config.explosionRadius;
+                this.explosionDuration = config.explosionDuration;
+                this.parent = config.parent;
+            }
+
+            checkCollisionWithEnemy(enemy) {
+                const dx = enemy.x - this.x;
+                const dy = enemy.y - this.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance <= enemy.radius + this.radius) {
+                    const explosion = this.parent.createExplosion(this.x, this.y);
+                    this.parent.projectiles.push(explosion);
+                    return true;
+                }
+                return false;
+            }
+
+            update() {
+                // 화면 밖으로 나가면 폭발
+                if (this.x < 0 || this.x > gameState.worldWidth || 
+                    this.y < 0 || this.y > gameState.worldHeight) {
+                    const explosion = this.parent.createExplosion(this.x, this.y);
+                    this.parent.projectiles.push(explosion);
+                    this.isActive = false;
+                    return false;
+                }
+
+                this.x += this.vx;
+                this.y += this.vy;
+                this.draw();
+                return true;
+            }
+
+            draw() {
+                const screen = worldToScreen(this.x, this.y);
+                
+                // 화살 그리기
+                ctx.beginPath();
+                const angle = Math.atan2(this.vy, this.vx);
+                const arrowLength = this.radius * 2;
+                
+                // 화살 몸체
+                ctx.moveTo(
+                    screen.x - Math.cos(angle) * arrowLength,
+                    screen.y - Math.sin(angle) * arrowLength
+                );
+                ctx.lineTo(
+                    screen.x + Math.cos(angle) * arrowLength,
+                    screen.y + Math.sin(angle) * arrowLength
+                );
+                
+                // 화살촉
+                ctx.lineTo(
+                    screen.x + Math.cos(angle + Math.PI/6) * arrowLength/2,
+                    screen.y + Math.sin(angle + Math.PI/6) * arrowLength/2
+                );
+                ctx.moveTo(
+                    screen.x + Math.cos(angle) * arrowLength,
+                    screen.y + Math.sin(angle) * arrowLength
+                );
+                ctx.lineTo(
+                    screen.x + Math.cos(angle - Math.PI/6) * arrowLength/2,
+                    screen.y + Math.sin(angle - Math.PI/6) * arrowLength/2
+                );
+                
+                ctx.strokeStyle = this.color;
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            }
+        }
+
+        // 3. 얼음 오브 - 적을 둔화시키는 구체
+        class IceOrb extends Weapon {
+            constructor(player, level = 1) {
+                super(player, level);
+                this.maxCooldown = Math.max(120, 240 - (level - 1) * 20);  // 긴 쿨다운
+                this.damage = 6 + (level - 1) * 3;  // 낮은 데미지
+                this.radius = 50 + (level - 1) * 20;  // 보호막 범위
+                this.duration = this.maxCooldown / 2;  // 지속시간
+                this.slowAmount = 0.4 + (level - 1) * 0.06;  // 감속 효과
+                this.isActive = false;
+                this.activeTime = 0;
+            }
+
+            update() {
+                if (this.cooldown > 0) {
+                    this.cooldown--;
+                } else if (!this.isActive) {
+                    this.activate();
+                    this.cooldown = this.maxCooldown;
+                }
+
+                if (this.isActive) {
+                    this.activeTime++;
+                    if (this.activeTime >= this.duration) {
+                        this.isActive = false;
+                        this.activeTime = 0;
+                    }
+                    this.applyEffect();
+                    this.draw();
+                }
+            }
+
+            activate() {
+                this.isActive = true;
+                this.activeTime = 0;
+            }
+
+            applyEffect() {
+                gameState.enemies.forEach(enemy => {
+                    const dx = enemy.x - this.player.x;
+                    const dy = enemy.y - this.player.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance <= this.radius) {
+                        // 보호막 내의 적에게 데미지와 감속 효과
+                        enemy.health -= this.damage / 60;  // 초당 데미지
+                        if (!enemy.slowed) {
+                            enemy.baseSpeed *= (1 - this.slowAmount);
+                            enemy.slowed = true;
+                            
+                            // 보호막에서 벗어날 때 속도 복구
+                            setTimeout(() => {
+                                enemy.baseSpeed /= (1 - this.slowAmount);
+                                enemy.slowed = false;
+                            }, 1000);
+                        }
+                    }
+                });
+            }
+
+            draw() {
+                if (!this.isActive) return;
+
+                const screen = worldToScreen(this.player.x, this.player.y);
+                
+                // 얼음 장�� 효과
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, this.radius, 0, Math.PI * 2);
+                
+                // 그라데이션 효과
+                const gradient = ctx.createRadialGradient(
+                    screen.x, screen.y, 0,
+                    screen.x, screen.y, this.radius
+                );
+                gradient.addColorStop(0, 'rgba(135, 206, 235, 0.1)');
+                gradient.addColorStop(0.7, 'rgba(135, 206, 235, 0.3)');
+                gradient.addColorStop(1, 'rgba(135, 206, 235, 0.5)');
+                
+                ctx.fillStyle = gradient;
+                ctx.fill();
+                
+                // 테두리 효과
+                ctx.strokeStyle = 'rgba(135, 206, 235, 0.8)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // 얼음 결정 파티클 효과
+                for (let i = 0; i < 12; i++) {
+                    const angle = (i / 12) * Math.PI * 2 + this.activeTime * 0.01;
+                    const x = screen.x + Math.cos(angle) * this.radius;
+                    const y = screen.y + Math.sin(angle) * this.radius;
+                    
+                    ctx.beginPath();
+                    ctx.arc(x, y, 3, 0, Math.PI * 2);
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                    ctx.fill();
+                }
+            }
+        }
+
+        // 4. 전투 드론 - 자동으로 적을 공격하는 드론
+        class CombatDrone extends Weapon {
+            constructor(player, level = 1) {
+                super(player, level);
+                this.maxCooldown = 150;
+                this.damage = 8 + (level - 1) * 4;
+                this.droneCount = 1 + Math.floor(level / 2); // 레벨당 드론 추가
+                this.drones = [];
+                this.createDrones();
+            }
+
+            createDrones() {
+                for (let i = 0; i < this.droneCount; i++) {
+                    this.drones.push({
+                        angle: (Math.PI * 2 * i) / this.droneCount,
+                        cooldown: 0
+                    });
+                }
+            }
+
+            update() {
+                // 드론 위치 업데이트
+                this.drones.forEach((drone, i) => {
+                    drone.angle += 0.02;
+                    const distance = 50;
+                    const x = this.player.x + Math.cos(drone.angle) * distance;
+                    const y = this.player.y + Math.sin(drone.angle) * distance;
+
+                    // 가장 가까운 적 찾아서 공격
+                    if (drone.cooldown <= 0) {
+                        const nearestEnemy = findNearestEnemy(x, y);
+                        if (nearestEnemy) {
+                            this.projectiles.push(new Projectile(x, y, this.player, {
+                                damage: this.damage,
+                                color: '#88ff88'
+                            }));
+                            drone.cooldown = 30;
+                        }
+                    } else {
+                        drone.cooldown--;
+                    }
+
+                    // 드론 그리기
+                    this.drawDrone(x, y);
+                });
+
+                // 발사체 업데이트
+                this.projectiles = this.projectiles.filter(p => {
+                    p.update();
+                    return p.isActive;
+                });
+            }
+
+            drawDrone(x, y) {
+                const screen = worldToScreen(x, y);
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, 8, 0, Math.PI * 2);
+                ctx.fillStyle = '#44ff44';
+                ctx.fill();
+                ctx.strokeStyle = '#228822';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+
+            shoot() {
+                // 드론이 자동으로 발사하므로 여기서는 아무것도 하지 않음
+            }
+        }
+
+        // 5. 블랙홀 - 적들을 끌어당기고 데미지를 주는 블랙홀 생성
+        class BlackHole extends Weapon {
+            constructor(player, level = 1) {
+                super(player, level);
+                this.maxCooldown = Math.max(150, 300 - (level - 1) * 25);
+                this.damage = 50 + (level - 1) * 20;
+                this.duration = 2000;  // 2초로 증가 (2000ms)
+                this.radius = 120 + (level - 1) * 20;
+                this.bombCount = 1 + Math.floor(level / 2);
+                this.projectiles = [];
+                this.cooldown = 0;
+            }
+
+            createExplosion(x, y) {
+                // 즉시 데미지 적용
+                gameState.enemies.forEach(enemy => {
+                    const dx = x - enemy.x;
+                    const dy = y - enemy.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance <= this.radius) {
+                        const damageRatio = 1 - (distance / this.radius);
+                        const damage = Math.floor(this.damage * damageRatio);
+                        if (damage > 0) {
+                            enemy.health -= damage;
+                            showDamageText(enemy.x, enemy.y, damage);
+                        }
+                    }
+                });
+
+                // 폭발 이펙트 객체 생성
+                const explosion = {
+                    x: x,
+                    y: y,
+                    timeLeft: this.duration,
+                    parent: this,
+                    
+                    update: function() {
+                        if (this.timeLeft <= 0) return false;
+                        
+                        // 진행도 계산 (1에서 0으로)
+                        const progress = this.timeLeft / this.parent.duration;
+                        
+                        // 폭발 이펙트 그리기
+                        const screen = worldToScreen(this.x, this.y);
+                        ctx.beginPath();
+                        ctx.arc(
+                            screen.x, 
+                            screen.y, 
+                            this.parent.radius * (1 - progress), 
+                            0, 
+                            Math.PI * 2
+                        );
+                        // 더 선명한 빨간색으로 변경하고 투명도 조정
+                        ctx.fillStyle = `rgba(255, 0, 0, ${Math.min(0.8, progress * 0.9)})`;
+                        ctx.fill();
+
+                        // 시간 감소
+                        this.timeLeft -= 16;
+                        return true;
+                    }
+                };
+
+                this.projectiles.push(explosion);
+            }
+        }
+
+        // 데미지 텍스트 표시 함수 (선택사항)
+        function showDamageText(x, y, damage) {
+            const screen = worldToScreen(x, y);
+            ctx.fillStyle = 'red';
+            ctx.font = '20px Arial';
+            ctx.fillText(damage.toString(), screen.x, screen.y - 20);
+        }
+
+        // 게임 상태 객체에 UI 업데이트 함수 추가
+        function updateStatsUI() {
+            const playerStats = document.getElementById('playerStats');
+            const weaponStats = document.getElementById('weaponStats');
+
+            // 플레이어 기본 스탯 업데이트
+            playerStats.innerHTML = `
+                <div>레벨: <span class="stat-value">${gameState.player.level}</span></div>
+                <div>체력: <span class="stat-value">${Math.ceil(gameState.player.health)}/${gameState.player.maxHealth}</span></div>
+                <div>이동속도: <span class="stat-value">${gameState.player.speed.toFixed(1)}</span></div>
+                <div>기본 공격력: <span class="stat-value">${gameState.player.damage}</span></div>
+            `;
+
+            // 무기 정보 업데이트
+            const weaponNames = {
+                'BasicWeapon': '기본 무기',
+                'TripleShot': '무작위 발사',
+                'LaserBeam': '레이저 빔',
+                'LightningChain': '번개 체인',
+                'IceOrb': '얼음장막',
+                'CombatDrone': '전투 드론'
+            };
+
+            let weaponHtml = '';
+            for (const [weaponType, level] of Object.entries(gameState.player.weaponLevels)) {
+                if (level > 0) {
+                    weaponHtml += `
+                        <div class="weapon-info">
+                            ${weaponNames[weaponType]}
+                            <span class="weapon-level">Lv.${level}</span>
+                        </div>
+                    `;
+                }
+            }
+            weaponStats.innerHTML = weaponHtml;
+        }
+
+        // 파발 효과를 위한 공통 함수
+        function drawExplosionEffect(x, y, maxRadius, progress, color) {
+            const screen = worldToScreen(x, y);
+            const currentRadius = maxRadius * (1 - progress);  // 바깥에서 안쪽으로 수축
+            
+            // 단순한 원형 이펙트
+            ctx.beginPath();
+            ctx.arc(screen.x, screen.y, currentRadius, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+        }
+
+        const joystick = {
+            container: null,
+            ball: null,
+            active: false,
+            centerX: 0,
+            centerY: 0,
+            currentX: 0,
+            currentY: 0,
+            maxDistance: 50,
+            dx: 0,
+            dy: 0,
+        
+            init() {
+                this.container = document.getElementById('joystickContainer');
+                this.ball = document.getElementById('joystickBall');
+                
+                // 터치 이벤트
+                this.container.addEventListener('touchstart', e => this.handleStart(e));
+                this.container.addEventListener('touchmove', e => this.handleMove(e));
+                this.container.addEventListener('touchend', () => this.handleEnd());
+                
+                // 마우스 이벤트
+                this.container.addEventListener('mousedown', e => this.handleStart(e));
+                document.addEventListener('mousemove', e => {
+                    if (this.active) this.handleMove(e);
+                });
+                document.addEventListener('mouseup', () => this.handleEnd());
+            
+                const rect = this.container.getBoundingClientRect();
+                this.centerX = rect.left + rect.width / 2;
+                this.centerY = rect.top + rect.height / 2;
+            },
+        
+            handleStart(e) {
+                this.active = true;
+                this.handleMove(e);
+            },
+        
+            handleMove(e) {
+                if (!this.active) return;
+            
+                let clientX, clientY;
+                if (e.touches) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                } else {
+                    clientX = e.clientX;
+                    clientY = e.clientY;
+                }
+            
+                const dx = clientX - this.centerX;
+                const dy = clientY - this.centerY;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance > this.maxDistance) {
+                    const angle = Math.atan2(dy, dx);
+                    this.currentX = this.centerX + Math.cos(angle) * this.maxDistance;
+                    this.currentY = this.centerY + Math.sin(angle) * this.maxDistance;
+                } else {
+                    this.currentX = clientX;
+                    this.currentY = clientY;
+                }
+            
+                this.dx = (this.currentX - this.centerX) / this.maxDistance;
+                this.dy = (this.currentY - this.centerY) / this.maxDistance;
+            
+                this.ball.style.left = `${this.currentX - this.container.offsetLeft}px`;
+                this.ball.style.top = `${this.currentY - this.container.offsetTop}px`;
+            },
+        
+            handleEnd() {
+                this.active = false;
+                this.dx = 0;
+                this.dy = 0;
+                this.ball.style.left = '50%';
+                this.ball.style.top = '50%';
+            }
+        };
+
+        initGame();
+    </script>
+</body>
+</html>
